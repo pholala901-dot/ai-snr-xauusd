@@ -2,6 +2,11 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
+
+# ==========================================
+# KONFIGURASI
+# ==========================================
 
 st.set_page_config(
     page_title="AI SNR XAUUSD",
@@ -13,13 +18,17 @@ st.title("📈 AI SNR XAUUSD")
 st.caption("Dashboard analisis emas multi-timeframe")
 
 st.warning(
-    "Data publik bukan feed resmi HFM. "
+    "Data berasal dari Yahoo Finance, bukan feed resmi HFM. "
     "Gunakan untuk pengujian, bukan jaminan profit."
 )
 
+# ==========================================
+# PENGAMBILAN DATA
+# ==========================================
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=300)
 def get_data(interval, period):
+
     try:
         df = yf.download(
             "XAUUSD=X",
@@ -37,218 +46,382 @@ def get_data(interval, period):
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
-        kolom = ["Open", "High", "Low", "Close"]
+        required = ["Open", "High", "Low", "Close"]
 
-        if not all(k in df.columns for k in kolom):
+        if not all(col in df.columns for col in required):
             return pd.DataFrame()
 
-        return df[kolom].dropna()
+        df = df[required].copy()
+        df = df.apply(pd.to_numeric, errors="coerce")
+        df = df.dropna()
 
-    except Exception as e:
-        st.error(f"Error {interval}: {str(e)}")
+        return df
+
+    except Exception:
         return pd.DataFrame()
 
 
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-
-        kolom = ["Open", "High", "Low", "Close"]
-        if not all(k in df.columns for k in kolom):
-            return pd.DataFrame()
-
-        return df[kolom].dropna()
-
-    except Exception as e:
-        st.error(f"Gagal mengambil data {interval}: {e}")
-        return pd.DataFrame()
-
-
-def analyze(df):
-    if len(df) < 30:
-        return None
-
-    close = df["Close"]
-    ema20 = close.ewm(span=20).mean().iloc[-1]
-    ema50 = close.ewm(span=50).mean().iloc[-1]
-    price = float(close.iloc[-1])
-
-    if price > ema20 > ema50:
-        trend = "Bullish"
-    elif price < ema20 < ema50:
-        trend = "Bearish"
-    else:
-        trend = "Netral"
-
-    recent = df.tail(30)
-    support = float(recent["Low"].min())
-    resistance = float(recent["High"].max())
-
-    return {
-        "trend": trend,
-        "price": price,
-        "support": support,
-        "resistance": resistance
-    }
-
+# ==========================================
+# MEMBENTUK TIMEFRAME
+# ==========================================
 
 @st.cache_data(ttl=300)
 def load_all():
-    h1 = get_data("1h", "730d")
 
-    h4 = pd.DataFrame()
+    data = {}
 
-    if not h1.empty and isinstance(h1.index, pd.DatetimeIndex):
+    data["MN"] = get_data("1mo", "10y")
+    data["W1"] = get_data("1wk", "10y")
+    data["D1"] = get_data("1d", "5y")
+    data["H1"] = get_data("1h", "730d")
+    data["M5"] = get_data("5m", "60d")
+    data["M1"] = get_data("1m", "7d")
+
+    h1 = data["H1"]
+
+    if not h1.empty:
         h4 = h1.resample("4h").agg({
             "Open": "first",
             "High": "max",
             "Low": "min",
             "Close": "last"
         }).dropna()
+    else:
+        h4 = pd.DataFrame()
+
+    data["H4"] = h4
+
+    return data
+
+
+# ==========================================
+# ANALISIS TREND DAN SNR
+# ==========================================
+
+def analyze(df):
+
+    if df is None or len(df) < 50:
+        return None
+
+    close = df["Close"]
+
+    ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
+    ema50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
+
+    price = float(close.iloc[-1])
+
+    if price > ema20 and ema20 > ema50:
+        trend = "BULLISH"
+    elif price < ema20 and ema20 < ema50:
+        trend = "BEARISH"
+    else:
+        trend = "NETRAL"
+
+    recent = df.tail(30)
+
+    support = float(recent["Low"].min())
+    resistance = float(recent["High"].max())
 
     return {
-        "MN": get_data("1mo", "10y"),
-        "W1": get_data("1wk", "10y"),
-        "D1": get_data("1d", "5y"),
-        "H4": h4,
-        "H1": h1,
-        "M5": get_data("5m", "60d"),
-        "M1": get_data("1m", "7d")
+        "trend": trend,
+        "price": price,
+        "ema20": float(ema20),
+        "ema50": float(ema50),
+        "support": support,
+        "resistance": resistance
     }
 
+
+# ==========================================
+# REFRESH DATA
+# ==========================================
 
 if st.button("🔄 Perbarui analisis"):
     st.cache_data.clear()
     st.rerun()
 
+
+# ==========================================
+# DASHBOARD
+# ==========================================
+
 try:
-    with st.spinner("Membaca data XAUUSD..."):
+
+    with st.spinner("Mengambil data harga emas..."):
+
         data = load_all()
 
     results = {
-        tf: analyze(df) for tf, df in data.items()
+        tf: analyze(df)
+        for tf, df in data.items()
+    }
+
+    available = {
+        tf: result
+        for tf, result in results.items()
+        if result is not None
     }
 
     missing = [
-        tf for tf, result in results.items()
-        if result is None
+        tf for tf in data
+        if results[tf] is None
     ]
 
-    if missing:
+    if not available:
+
         st.error(
-            "Data belum tersedia untuk: "
-            + ", ".join(missing)
-            + ". Coba perbarui nanti."
+            "Belum ada data XAUUSD dari Yahoo Finance. "
+            "Periksa koneksi atau sumber data."
         )
+
         st.stop()
 
-    higher = ["MN", "W1", "D1", "H4", "H1"]
+    # ======================================
+    # HARGA TERKINI
+    # ======================================
+
+    current_price = available["M1"]["price"] if "M1" in available else (
+        available["H1"]["price"] if "H1" in available else
+        list(available.values())[0]["price"]
+    )
+
+    st.subheader("Harga XAUUSD")
+
+    st.metric(
+        "Harga terakhir",
+        f"{current_price:.2f}"
+    )
+
+    # ======================================
+    # TABEL MULTI TIMEFRAME
+    # ======================================
+
+    st.subheader("Analisis Multi-Timeframe")
+
+    rows = []
+
+    for tf in ["MN", "W1", "D1", "H4", "H1", "M5", "M1"]:
+
+        if tf in available:
+
+            r = available[tf]
+
+            rows.append({
+                "Timeframe": tf,
+                "Trend": r["trend"],
+                "Harga": round(r["price"], 2),
+                "Support": round(r["support"], 2),
+                "Resistance": round(r["resistance"], 2)
+            })
+
+    st.dataframe(
+        pd.DataFrame(rows),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    # ======================================
+    # BIAS MULTI TIMEFRAME
+    # ======================================
+
+    main_tfs = ["MN", "W1", "D1", "H4", "H1"]
 
     bullish = sum(
-        results[tf]["trend"] == "Bullish"
-        for tf in higher
+        1 for tf in main_tfs
+        if tf in available and available[tf]["trend"] == "BULLISH"
     )
 
     bearish = sum(
-        results[tf]["trend"] == "Bearish"
-        for tf in higher
+        1 for tf in main_tfs
+        if tf in available and available[tf]["trend"] == "BEARISH"
     )
 
-    m5 = data["M5"]
-    m1 = results["M1"]
-    last = m5.iloc[-1]
-    prev = m5.iloc[-2]
-
-    price = results["M5"]["price"]
-    support = results["M5"]["support"]
-    resistance = results["M5"]["resistance"]
-
-    distance = max(price * 0.001, 0.5)
-
-    near_support = abs(price - support) <= distance
-    near_resistance = abs(price - resistance) <= distance
-
-    buy_confirm = (
-        last["Close"] > last["Open"]
-        and last["Close"] > prev["High"]
-        and m1["trend"] == "Bullish"
+    total_main = sum(
+        1 for tf in main_tfs
+        if tf in available
     )
 
-    sell_confirm = (
-        last["Close"] < last["Open"]
-        and last["Close"] < prev["Low"]
-        and m1["trend"] == "Bearish"
-    )
+    st.subheader("Keputusan Analisis")
 
     bias = "WAIT"
-    score = max(bullish, bearish) * 20
-    entry = sl = tp1 = tp2 = None
 
-    reason = "Belum ada konfirmasi SNR yang valid."
-    invalidation = "Tunggu reaksi harga di zona SNR."
-
-    if bullish >= 4 and near_support and buy_confirm:
+    if total_main >= 4 and bullish >= 4:
         bias = "BUY"
-        entry = price
-        sl = support - distance
-        risk = entry - sl
-        tp1 = entry + risk
-        tp2 = entry + (2 * risk)
-        score = min(100, 60 + bullish * 5)
-        reason = "Mayoritas timeframe besar bullish dan ada konfirmasi M5/M1 di support."
-        invalidation = f"Setup batal jika harga turun di bawah {sl:.2f}."
-
-    elif bearish >= 4 and near_resistance and sell_confirm:
+    elif total_main >= 4 and bearish >= 4:
         bias = "SELL"
-        entry = price
-        sl = resistance + distance
-        risk = sl - entry
-        tp1 = entry - risk
-        tp2 = entry - (2 * risk)
-        score = min(100, 60 + bearish * 5)
-        reason = "Mayoritas timeframe besar bearish dan ada konfirmasi M5/M1 di resistance."
-        invalidation = f"Setup batal jika harga naik di atas {sl:.2f}."
 
-    st.subheader("Hasil sinyal")
+    # ======================================
+    # LEVEL ENTRY
+    # ======================================
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Harga referensi", f"{price:.2f}")
-    c2.metric("Bias", bias)
-    c3.metric("Skor aturan", f"{score}/100")
+    if bias == "BUY" and "H1" in available:
+
+        support = available["H1"]["support"]
+        resistance = available["H1"]["resistance"]
+
+        entry_low = support
+        entry_high = support + (resistance - support) * 0.15
+
+        sl = support - (resistance - support) * 0.10
+
+        risk = entry_high - sl
+
+        tp1 = entry_high + risk
+        tp2 = entry_high + risk * 2
+        tp3 = entry_high + risk * 3
+
+        invalidation = sl
+
+        reason = (
+            "Minimal 4 timeframe utama menunjukkan bullish. "
+            "Area support H1 digunakan sebagai referensi entry."
+        )
+
+    elif bias == "SELL" and "H1" in available:
+
+        support = available["H1"]["support"]
+        resistance = available["H1"]["resistance"]
+
+        entry_low = resistance - (resistance - support) * 0.15
+        entry_high = resistance
+
+        sl = resistance + (resistance - support) * 0.10
+
+        risk = sl - entry_low
+
+        tp1 = entry_low - risk
+        tp2 = entry_low - risk * 2
+        tp3 = entry_low - risk * 3
+
+        invalidation = sl
+
+        reason = (
+            "Minimal 4 timeframe utama menunjukkan bearish. "
+            "Area resistance H1 digunakan sebagai referensi entry."
+        )
+
+    else:
+
+        entry_low = None
+        entry_high = None
+        sl = None
+        tp1 = None
+        tp2 = None
+        tp3 = None
+        invalidation = None
+
+        reason = (
+            "Arah timeframe utama belum cukup sejalan. "
+            "Tunggu konfirmasi berikutnya."
+        )
+
+    # ======================================
+    # SKOR KESESUAIAN
+    # ======================================
+
+    if total_main > 0:
+        score = round(
+            max(bullish, bearish) / total_main * 100
+        )
+    else:
+        score = 0
+
+    st.metric(
+        "Skor kesesuaian arah timeframe",
+        f"{score}%"
+    )
 
     st.caption(
-        "Skor adalah kesesuaian aturan, bukan probabilitas profit."
+        "Skor menunjukkan keselarasan arah timeframe, "
+        "bukan probabilitas kemenangan transaksi."
     )
 
-    st.subheader("Rencana trading")
+    # ======================================
+    # HASIL SINYAL
+    # ======================================
 
-    if bias == "WAIT":
-        st.warning(reason)
+    if bias == "BUY":
+
+        st.success("BIAS: BUY")
+
+    elif bias == "SELL":
+
+        st.error("BIAS: SELL")
+
     else:
-        st.write(f"Entry: {entry:.2f}")
-        st.write(f"Stop Loss: {sl:.2f}")
-        st.write(f"TP1: {tp1:.2f}")
-        st.write(f"TP2: {tp2:.2f}")
-        st.write(reason)
 
-    st.write("Invalidasi:", invalidation)
+        st.warning("BIAS: WAIT")
 
-    st.subheader("Multi-timeframe")
+    if bias != "WAIT":
 
-    table = []
+        col1, col2 = st.columns(2)
 
-    for tf, result in results.items():
-        table.append({
-            "Timeframe": tf,
-            "Trend": result["trend"],
-            "Harga": round(result["price"], 2),
-            "Support": round(result["support"], 2),
-            "Resistance": round(result["resistance"], 2)
-        })
+        with col1:
 
-    st.dataframe(
-        pd.DataFrame(table),
-        use_container_width=True
+            st.write("**Area Entry**")
+            st.write(
+                f"{entry_low:.2f} - {entry_high:.2f}"
+            )
+
+            st.write("**Stop Loss**")
+            st.write(f"{sl:.2f}")
+
+            st.write("**Invalidasi**")
+            st.write(f"{invalidation:.2f}")
+
+        with col2:
+
+            st.write("**Target Profit**")
+            st.write(f"TP1: {tp1:.2f}")
+            st.write(f"TP2: {tp2:.2f}")
+            st.write(f"TP3: {tp3:.2f}")
+
+    else:
+
+        st.info(
+            "Belum ada entry. Jangan memaksakan BUY atau SELL."
+        )
+
+    st.write("**Alasan:**")
+    st.write(reason)
+
+    # ======================================
+    # KONFIRMASI M5 DAN M1
+    # ======================================
+
+    st.subheader("Konfirmasi Entry")
+
+    for tf in ["M5", "M1"]:
+
+        if tf in available:
+
+            st.write(
+                f"{tf}: {available[tf]['trend']}"
+            )
+
+        else:
+
+            st.write(
+                f"{tf}: Data belum tersedia"
+            )
+
+    st.caption(
+        "Entry tetap memerlukan reaksi harga dan "
+        "konfirmasi candlestick pada zona SNR. "
+        "Dashboard ini belum memvalidasi pola candlestick."
     )
 
-except Exception as error:
-    st.error(f"Gagal mengambil data: {error}")
+    # ======================================
+    # DATA YANG TIDAK TERSEDIA
+    # ======================================
+
+    if missing:
+
+        st.warning(
+            "Timeframe belum tersedia: "
+            + ", ".join(missing)
+        )
+
+except Exception as e:
+
+    st.error(f"Terjadi kesalahan: {str(e)}")
