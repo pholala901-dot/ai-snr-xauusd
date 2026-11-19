@@ -17,22 +17,36 @@ st.warning(
     "Gunakan untuk pengujian, bukan jaminan profit."
 )
 
+
 @st.cache_data(ttl=300)
 def get_data(interval, period):
-    df = yf.download(
-        "XAUUSD=X",
-        interval=interval,
-        period=period,
-        progress=False
-    )
+    try:
+        df = yf.download(
+            "XAUUSD=X",
+            interval=interval,
+            period=period,
+            progress=False,
+            auto_adjust=False,
+            threads=False,
+            timeout=20
+        )
 
-    if df.empty:
+        if df is None or df.empty:
+            return pd.DataFrame()
+
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        kolom = ["Open", "High", "Low", "Close"]
+        if not all(k in df.columns for k in kolom):
+            return pd.DataFrame()
+
+        return df[kolom].dropna()
+
+    except Exception as e:
+        st.error(f"Gagal mengambil data {interval}: {e}")
         return pd.DataFrame()
 
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
-    return df[["Open", "High", "Low", "Close"]].dropna()
 
 def analyze(df):
     if len(df) < 30:
