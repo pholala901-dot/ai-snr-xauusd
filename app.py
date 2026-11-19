@@ -18,7 +18,7 @@ st.warning(
 )
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=60)
 def get_data(interval, period):
     try:
         df = yf.download(
@@ -28,11 +28,26 @@ def get_data(interval, period):
             progress=False,
             auto_adjust=False,
             threads=False,
-            timeout=20
+            timeout=30
         )
 
         if df is None or df.empty:
             return pd.DataFrame()
+
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        kolom = ["Open", "High", "Low", "Close"]
+
+        if not all(k in df.columns for k in kolom):
+            return pd.DataFrame()
+
+        return df[kolom].dropna()
+
+    except Exception as e:
+        st.error(f"Error {interval}: {str(e)}")
+        return pd.DataFrame()
+
 
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
