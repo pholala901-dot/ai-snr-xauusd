@@ -61,22 +61,31 @@ def analyze(df):
         "resistance": resistance
     }
 
+
 @st.cache_data(ttl=300)
 def load_all():
-    return {
-        "MN": get_data("1mo", "10y"),
-        "W1": get_data("1wk", "10y"),
-        "D1": get_data("1d", "5y"),
-        "H4": get_data("1h", "730d").resample("4h").agg({
+    h1 = get_data("1h", "730d")
+
+    h4 = pd.DataFrame()
+
+    if not h1.empty and isinstance(h1.index, pd.DatetimeIndex):
+        h4 = h1.resample("4h").agg({
             "Open": "first",
             "High": "max",
             "Low": "min",
             "Close": "last"
-        }).dropna(),
-        "H1": get_data("1h", "730d"),
+        }).dropna()
+
+    return {
+        "MN": get_data("1mo", "10y"),
+        "W1": get_data("1wk", "10y"),
+        "D1": get_data("1d", "5y"),
+        "H4": h4,
+        "H1": h1,
         "M5": get_data("5m", "60d"),
         "M1": get_data("1m", "7d")
     }
+
 
 if st.button("🔄 Perbarui analisis"):
     st.cache_data.clear()
